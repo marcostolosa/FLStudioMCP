@@ -16,6 +16,13 @@ log = logging.getLogger("fl_studio_mcp.keystroke")
 
 HOTKEY_NAME = "Ctrl+Alt+Y (Win) / Cmd+Opt+Y (Mac)"
 
+# FL Studio's piano-roll Script menu is keyboard navigable.  The sequence is
+# deliberately expressed in virtual-key codes so it is independent of the UI
+# language: F3 opens the piano-roll menu, Home selects File, two Downs select
+# Tools, Right enters its scripts column, Down selects ComposeWithLLM, and
+# Enter runs it (and makes it the target of Ctrl+Alt+Y from then on).
+_COMPOSE_MENU_KEYS = (0x72, 0x24, 0x28, 0x28, 0x27, 0x28, 0x0D)
+
 
 def request_file():
     from .file_bridge import REQUEST_FILE
@@ -100,6 +107,10 @@ class _Win32Input:
             [self.key(vk) for vk in modifiers] + [self.key(key), self.key(key, up=True)]
             + [self.key(vk, up=True) for vk in reversed(modifiers)]
         )
+
+    def press(self, key: int) -> bool:
+        """Press and release one virtual key."""
+        return self.send([self.key(key), self.key(key, up=True)])
 
     def text(self, value: str) -> bool:
         units = value.encode("utf-16-le")
@@ -251,6 +262,36 @@ def send_hotkey_windows() -> bool:
         return api.combo([0x11, 0x12], 0x59)  # Ctrl+Alt+Y
     except Exception as exc:
         log.warning("keystroke failed: %s", exc)
+        return False
+
+
+def select_compose_script_windows() -> bool:
+    """Select and run ComposeWithLLM from the active piano-roll Script menu.
+
+    This is the bootstrap path for a fresh FL Studio profile, where
+    Ctrl+Alt+Y cannot work yet because no piano-roll script has been selected.
+    Running the script here also drains the already-staged request queue.
+    """
+    if sys.platform != "win32":
+        return False
+    try:
+        api = _Win32Input()
+        hwnd = api.find_fl_window()
+        if not hwnd:
+            log.warning("FL Studio window not found for piano-roll script bootstrap")
+            return False
+        api.user32.ShowWindow(hwnd, 9)
+        api.user32.SetForegroundWindow(hwnd)
+        time.sleep(0.10)
+        for index, key in enumerate(_COMPOSE_MENU_KEYS):
+            if not api.press(key):
+                return False
+            # FL builds the two custom popup columns after F3/Right.  A short
+            # pause at those boundaries avoids racing the menu construction.
+            time.sleep(0.12 if index in {0, 4} else 0.035)
+        return True
+    except Exception as exc:
+        log.warning("piano-roll script bootstrap failed: %s", exc)
         return False
 
 

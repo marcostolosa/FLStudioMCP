@@ -118,7 +118,7 @@ Requirements:
   named `loopMIDI Port`
 
 ```powershell
-git clone https://github.com/marcostolosa/FLStudioMCP.git fLMCP
+git clone https://github.com/geezoria/FLStudioMCP.git fLMCP
 cd fLMCP
 ./scripts/install_windows.ps1
 ```
@@ -143,9 +143,10 @@ What the installer does:
    **Controller type** = `fLMCP Bridge`, and click *Enable*.
 4. Open FL's script output (`Options > MIDI > View script output`) and look
    for `[fLMCP] file+MIDI bridge ready`.
-5. Open any piano roll, click the scripts dropdown (top-right), and pick
-   **ComposeWithLLM** as the active script. This binds `Ctrl+Alt+Y` to our
-   pyscript. FL remembers the choice across sessions.
+5. No manual piano-roll script selection is required. On the first piano-roll
+   call, fLMCP tries `Ctrl+Alt+Y` and, if FL has no active script yet,
+   automatically selects and runs **ComposeWithLLM** through the piano-roll
+   menu. FL remembers that choice for later calls.
 6. Restart Claude Desktop / Claude Code so it picks up the new MCP entry.
 
 ### Optional extras
@@ -265,7 +266,7 @@ before issuing edits.
 | --- | --- |
 | `bridge unavailable` from tool calls | FL is not running, the script is not loaded, or the wake port name differs. Enable `loopMIDI Port` with Controller type = `fLMCP Bridge`, or set `FL_STUDIO_MCP_MIDI_PORT` to the actual port name. |
 | `loopMIDI Port` not found | Start loopMIDI and create/rename the port to `loopMIDI Port`; then refresh FL's MIDI device list. |
-| Piano-roll edits don't apply | fLMCP focuses FL Studio and sends `Ctrl+Alt+Y`. If you rebound the hotkey, or FL can't be foregrounded, press `Ctrl+Alt+Y` manually once after the tool call. |
+| Piano-roll edits don't apply | fLMCP focuses FL Studio, tries `Ctrl+Alt+Y`, then automatically selects **ComposeWithLLM** from the piano-roll menu if no state comes back. Check that a piano roll can open and that `ComposeWithLLM.pyscript` is installed. |
 | Hotkey fires the wrong script | Open any piano roll → right-click the script dropdown → set `ComposeWithLLM` as the default. |
 | `playlist_place_pattern` returns a structured error | FL's public Python API does not yet expose clip placement. Documented in [`docs/LIMITATIONS.md`](docs/LIMITATIONS.md). |
 | `voice_*` tools error with `no module named sounddevice` | Install the audio extras: `pip install "fl-studio-mcp[audio]"` (or re-run `install_windows.ps1`). |

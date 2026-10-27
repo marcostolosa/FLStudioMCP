@@ -114,7 +114,7 @@ def stage_and_run(actions: list[dict], wait_sec: float = 3.0,
     If `channel` is given and the controller bridge is online, the correct channel's
     piano roll is opened first (best-effort) so the edits route to it.
     """
-    from .keystroke import send_hotkey_windows
+    from .keystroke import send_hotkey_windows, select_compose_script_windows
 
     if not is_installed():
         return {
@@ -132,18 +132,29 @@ def stage_and_run(actions: list[dict], wait_sec: float = 3.0,
     for a in actions:
         _append_request(a)
 
+    started = time.monotonic()
     fired = send_hotkey_windows()
-    state = wait_for_state(wait_sec) if fired else None
+    # A normal hotkey round-trip is effectively immediate.  Do not consume the
+    # full tool timeout before repairing the common fresh-install state where
+    # ComposeWithLLM has never been selected in the piano-roll Script menu.
+    first_wait = min(max(wait_sec, 0.0), 0.8)
+    state = wait_for_state(first_wait) if fired else None
+    bootstrapped = False
+    if state is None and sys.platform == "win32":
+        bootstrapped = select_compose_script_windows()
+        remaining = max(0.0, wait_sec - (time.monotonic() - started))
+        if bootstrapped and remaining > 0:
+            state = wait_for_state(remaining)
 
     result = {
-        "ok": bool(fired and state is not None),
+        "ok": bool(state is not None and (fired or bootstrapped)),
         "hotkey_sent": fired,
+        "script_bootstrapped": bootstrapped,
         "staged_actions": len(actions),
         "state": state,
-        "note": None if fired else
-            "Could not auto-press Ctrl+Alt+Y. Make sure FL Studio is in the "
-            "foreground and ComposeWithLLM is the active piano-roll script, "
-            "then press Ctrl+Alt+Y manually.",
+        "note": None if state is not None else
+            "FL Studio did not produce piano-roll state after Ctrl+Alt+Y and "
+            "the automatic ComposeWithLLM menu bootstrap.",
     }
     if open_status is not None:
         result["open_status"] = open_status

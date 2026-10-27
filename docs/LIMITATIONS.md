@@ -89,13 +89,11 @@ the error response to fall back gracefully.
 ### Piano roll
 - ✅ add / delete / clear / read / quantize / transpose / humanize /
   duplicate — all via `flpianoroll.score`.
-- ⚠️ Requires FL Studio to be the foreground window so `SendInput(Ctrl+Alt+Y)`
-  lands. Bridge does best-effort `SetForegroundWindow`. If focus fails, tool
-  response has `hotkey_sent: False` — ask user to press Ctrl+Alt+Y manually.
-- ⚠️ Requires the **`ComposeWithLLM` pyscript to be the currently selected
-  piano-roll script**. When FL first loads, open any pattern's piano roll,
-  click the *scripts* dropdown (top-right of the piano roll), and pick
-  `ComposeWithLLM` once. FL remembers the choice across sessions.
+- ⚠️ Requires FL Studio to accept foreground input. The bridge does a
+  best-effort `SetForegroundWindow`, tries `Ctrl+Alt+Y`, and automatically
+  selects **ComposeWithLLM** through the piano-roll menu if no state comes
+  back. Results expose both `hotkey_sent` and `script_bootstrapped` so clients
+  can distinguish the fast path from first-run recovery.
 
 ### Transport constants
 The bridge gracefully degrades if specific `midi.FPT_*` / `midi.REC_*`

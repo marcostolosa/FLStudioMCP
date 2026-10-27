@@ -195,7 +195,12 @@ def _process_request_file():
     if not isinstance(request, dict):
         return False
     request_id = request.get("id")
-    if not isinstance(request_id, int) or request_id <= _last_request_id:
+    # Skip only the exact id we just handled (dedupe repeated MIDI wakes for the
+    # same command). Using '==' instead of '<=' keeps the bridge usable when
+    # multiple clients, each starting its id counter from its own time.time_ns(),
+    # interleave: a later client would otherwise raise the watermark and make an
+    # earlier client's (lower-id) commands be ignored forever.
+    if not isinstance(request_id, int) or request_id == _last_request_id:
         return False
 
     _last_request_id = request_id
@@ -582,19 +587,19 @@ def h_channels_solo(p):
 
 def h_channels_set_name(p):
     idx = int(p["index"]); name = p.get("name", "")
-    channels.setChannelName(idx, name)
+    channels.setChannelName(idx, name, True)
     return _ch_info(idx)
 
 
 def h_channels_set_color(p):
     idx = int(p["index"])
-    channels.setChannelColor(idx, _color_to_int(p["color"]))
+    channels.setChannelColor(idx, _color_to_int(p["color"]), True)
     return _ch_info(idx)
 
 
 def h_channels_route_to_mixer(p):
     idx = int(p["index"]); tr = int(p["mixer_track"])
-    channels.setTargetFxTrack(idx, tr)
+    channels.setTargetFxTrack(idx, tr, True)
     return {"index": idx, "mixer_track": channels.getTargetFxTrack(idx, True)}
 
 
@@ -880,11 +885,10 @@ def h_mixer_set_eq_band(p):
 def h_mixer_link_channel(p):
     """Link a channel to a mixer track. `mode` legacy param is kept for API compat."""
     ch = int(p["channel"]); tr = int(p["track"])
-    select = bool(p.get("select", False))
-    if hasattr(mixer, "linkChannelToTrack"):
-        mixer.linkChannelToTrack(ch, tr, select)
-    else:
-        channels.setTargetFxTrack(ch, tr)
+    # Route via the global-index API so audio-clip channels (whose rack/group
+    # index differs from the global index) link correctly instead of raising
+    # "Index out of range".
+    channels.setTargetFxTrack(ch, tr, True)
     return {"channel": ch, "track": tr}
 
 
