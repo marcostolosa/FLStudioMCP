@@ -132,12 +132,32 @@ class BridgeClient:
 
     def _write_command(self, envelope: dict[str, Any]) -> None:
         self.bridge_dir.mkdir(parents=True, exist_ok=True)
-        temporary = self.bridge_dir / "mcp_command.json.tmp"
-        temporary.write_text(
-            json.dumps(envelope, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
+        request_id = envelope.get("id", "request")
+        temporary = self.bridge_dir / (
+            f"mcp_command.{os.getpid()}.{threading.get_ident()}.{request_id}.tmp"
         )
-        os.replace(temporary, self.command_file)
+        try:
+            temporary.write_text(
+                json.dumps(envelope, ensure_ascii=False, separators=(",", ":")),
+                encoding="utf-8",
+            )
+            deadline = time.monotonic() + min(1.0, max(0.1, self.timeout / 2))
+            while True:
+                try:
+                    os.replace(temporary, self.command_file)
+                    return
+                except PermissionError:
+                    # FL may still have the previous command open for a few
+                    # milliseconds. Retrying is required on Windows, where an
+                    # open destination cannot be replaced atomically.
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(POLL_INTERVAL)
+        finally:
+            try:
+                temporary.unlink()
+            except OSError:
+                pass
 
     def _read_response(self, request_id: int) -> dict[str, Any] | None:
         try:
@@ -153,8 +173,8 @@ class BridgeClient:
             pass
         return response
 
-    def _start_automation_wake_pump(self, result: Any) -> None:
-        """Keep asynchronous FL automation moving when OnIdle is unavailable.
+    def _start_async_wake_pump(self, result: Any) -> None:
+        """Keep asynchronous FL-side jobs moving when OnIdle is unavailable.
 
         FL Studio 2025 delivers ``OnMidiMsg`` but may never call ``OnIdle`` for
         this controller. The MCP process can use threads safely, so it sends
@@ -203,7 +223,7 @@ class BridgeClient:
                     self._last_success = time.monotonic()
                     if response.get("ok"):
                         result = response.get("result")
-                        self._start_automation_wake_pump(result)
+                        self._start_async_wake_pump(result)
                         return result
                     raise RPCError(action=action, message=str(response.get("error") or "unknown error"))
 

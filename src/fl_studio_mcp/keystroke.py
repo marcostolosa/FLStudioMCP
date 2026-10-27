@@ -1,8 +1,8 @@
-"""Send Ctrl+Alt+Y to the FL Studio window to fire the companion piano-roll pyscript.
+"""Small Win32 input helpers for FL Studio host-side UI operations.
 
-Strategy: find the FL Studio foreground window, bring it to front, send the
-hotkey via Win32 SendInput. Requires pywin32 on Windows; on other platforms
-falls back to a no-op and relies on user pressing the hotkey manually.
+The piano-roll bridge uses Ctrl+Alt+Y. Project Save As is implemented here
+because FL's controller API exposes only ``FPT_SaveNew`` (which ignores the
+requested path). These helpers use only :mod:`ctypes`; pywin32 is not required.
 """
 
 from __future__ import annotations
@@ -10,15 +10,12 @@ from __future__ import annotations
 import logging
 import sys
 import time
+from pathlib import Path
 
 log = logging.getLogger("fl_studio_mcp.keystroke")
 
 HOTKEY_NAME = "Ctrl+Alt+Y (Win) / Cmd+Opt+Y (Mac)"
 
-
-# The canonical request/state file locations and the state-polling helpers live
-# in `file_bridge` (single source of truth). These thin wrappers are kept for
-# back-compat with any code / docs that referenced them here.
 
 def request_file():
     from .file_bridge import REQUEST_FILE
@@ -41,50 +38,20 @@ def wait_for_state(deadline_sec: float = 3.0) -> dict | None:
     return _wait_for_state(deadline_sec)
 
 
-def send_hotkey_windows() -> bool:
-    """Find FL Studio window and send Ctrl+Alt+Y. Returns True on success."""
-    if sys.platform != "win32":
-        return False
-    try:
+class _Win32Input:
+    """Minimal SendInput wrapper, created lazily on Windows."""
+
+    KEYEVENTF_KEYUP = 0x0002
+    KEYEVENTF_UNICODE = 0x0004
+    INPUT_KEYBOARD = 1
+
+    def __init__(self):
         import ctypes
         import ctypes.wintypes as w
 
-        user32 = ctypes.WinDLL("user32", use_last_error=True)
-
-        # 1) Find FL Studio window
-        target_hwnd = [0]
-
-        WNDENUMPROC = ctypes.WINFUNCTYPE(ctypes.c_int, w.HWND, w.LPARAM)
-
-        def _enum(hwnd, _):
-            length = user32.GetWindowTextLengthW(hwnd)
-            if length == 0:
-                return 1
-            buf = ctypes.create_unicode_buffer(length + 1)
-            user32.GetWindowTextW(hwnd, buf, length + 1)
-            title = buf.value
-            if "FL Studio" in title and user32.IsWindowVisible(hwnd):
-                target_hwnd[0] = hwnd
-                return 0
-            return 1
-
-        user32.EnumWindows(WNDENUMPROC(_enum), 0)
-        if not target_hwnd[0]:
-            log.warning("FL Studio window not found for keystroke")
-            return False
-
-        # 2) Bring to foreground (best effort)
-        user32.ShowWindow(target_hwnd[0], 9)  # SW_RESTORE
-        user32.SetForegroundWindow(target_hwnd[0])
-        time.sleep(0.08)
-
-        # 3) SendInput key combo Ctrl+Alt+Y
-        # Virtual key codes
-        VK_CONTROL = 0x11
-        VK_MENU = 0x12  # alt
-        VK_Y = 0x59
-        KEYEVENTF_KEYUP = 0x0002
-        INPUT_KEYBOARD = 1
+        self.ctypes = ctypes
+        self.w = w
+        self.user32 = ctypes.WinDLL("user32", use_last_error=True)
 
         class KEYBDINPUT(ctypes.Structure):
             _fields_ = [("wVk", w.WORD), ("wScan", w.WORD), ("dwFlags", w.DWORD),
@@ -104,24 +71,146 @@ def send_hotkey_windows() -> bool:
         class INPUT(ctypes.Structure):
             _fields_ = [("type", w.DWORD), ("u", _UNION)]
 
-        def make_input(vk, up=False):
-            i = INPUT()
-            i.type = INPUT_KEYBOARD
-            i.u.ki = KEYBDINPUT(vk, 0, KEYEVENTF_KEYUP if up else 0, 0, None)
-            return i
+        self.KEYBDINPUT = KEYBDINPUT
+        self.INPUT = INPUT
+        self.user32.SendInput.argtypes = (w.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
 
-        seq = [
-            make_input(VK_CONTROL, up=False),
-            make_input(VK_MENU, up=False),
-            make_input(VK_Y, up=False),
-            make_input(VK_Y, up=True),
-            make_input(VK_MENU, up=True),
-            make_input(VK_CONTROL, up=True),
-        ]
-        arr = (INPUT * len(seq))(*seq)
-        user32.SendInput.argtypes = (w.UINT, ctypes.POINTER(INPUT), ctypes.c_int)
-        sent = user32.SendInput(len(seq), arr, ctypes.sizeof(INPUT))
+    def key(self, vk: int, *, up: bool = False, scan: int = 0, unicode: bool = False):
+        item = self.INPUT()
+        item.type = self.INPUT_KEYBOARD
+        flags = (self.KEYEVENTF_KEYUP if up else 0) | (self.KEYEVENTF_UNICODE if unicode else 0)
+        item.u.ki = self.KEYBDINPUT(vk, scan, flags, 0, None)
+        return item
+
+    def send(self, items) -> bool:
+        seq = list(items)
+        array = (self.INPUT * len(seq))(*seq)
+        sent = self.user32.SendInput(len(seq), array, self.ctypes.sizeof(self.INPUT))
         return sent == len(seq)
-    except Exception as e:
-        log.warning("keystroke failed: %s", e)
+
+    def combo(self, modifiers: list[int], key: int) -> bool:
+        return self.send(
+            [self.key(vk) for vk in modifiers] + [self.key(key), self.key(key, up=True)]
+            + [self.key(vk, up=True) for vk in reversed(modifiers)]
+        )
+
+    def text(self, value: str) -> bool:
+        units = value.encode("utf-16-le")
+        items = []
+        for offset in range(0, len(units), 2):
+            unit = int.from_bytes(units[offset:offset + 2], "little")
+            items.extend([self.key(0, scan=unit, unicode=True),
+                          self.key(0, up=True, scan=unit, unicode=True)])
+        return self.send(items)
+
+    def find_fl_window(self) -> int:
+        target = [0]
+        callback_type = self.ctypes.WINFUNCTYPE(self.ctypes.c_int, self.w.HWND, self.w.LPARAM)
+
+        def callback(hwnd, _):
+            length = self.user32.GetWindowTextLengthW(hwnd)
+            if length <= 0:
+                return 1
+            buf = self.ctypes.create_unicode_buffer(length + 1)
+            self.user32.GetWindowTextW(hwnd, buf, length + 1)
+            if "FL Studio" in buf.value and self.user32.IsWindowVisible(hwnd):
+                target[0] = hwnd
+                return 0
+            return 1
+
+        self.user32.EnumWindows(callback_type(callback), 0)
+        return target[0]
+
+
+def send_hotkey_windows() -> bool:
+    """Find FL Studio and send Ctrl+Alt+Y. Returns True on success."""
+    if sys.platform != "win32":
         return False
+    try:
+        api = _Win32Input()
+        hwnd = api.find_fl_window()
+        if not hwnd:
+            log.warning("FL Studio window not found for keystroke")
+            return False
+        api.user32.ShowWindow(hwnd, 9)
+        api.user32.SetForegroundWindow(hwnd)
+        time.sleep(0.08)
+        return api.combo([0x11, 0x12], 0x59)  # Ctrl+Alt+Y
+    except Exception as exc:
+        log.warning("keystroke failed: %s", exc)
+        return False
+
+
+def save_project_as_windows(path: str, timeout_sec: float = 15.0) -> dict:
+    """Save the active FL project to an explicit, previously-unused ``.flp`` path."""
+    target = Path(path).expanduser()
+    if target.suffix.lower() != ".flp":
+        return {"ok": False, "error": "project_save_as path must end in .flp"}
+    try:
+        target = target.resolve(strict=False)
+    except OSError as exc:
+        return {"ok": False, "error": f"invalid project path: {exc}"}
+    if not target.parent.is_dir():
+        return {"ok": False, "error": f"parent directory does not exist: {target.parent}"}
+    if target.exists():
+        return {"ok": False, "error": f"target already exists; refusing to overwrite: {target}"}
+    if sys.platform != "win32":
+        return {"ok": False, "error": "project_save_as UI automation is available on Windows only"}
+
+    try:
+        api = _Win32Input()
+        hwnd = api.find_fl_window()
+        if not hwnd:
+            return {"ok": False, "error": "FL Studio window not found"}
+        fl_pid = api.w.DWORD()
+        api.user32.GetWindowThreadProcessId(hwnd, api.ctypes.byref(fl_pid))
+
+        api.user32.ShowWindow(hwnd, 9)
+        api.user32.SetForegroundWindow(hwnd)
+        time.sleep(0.08)
+        if not api.combo([0x11, 0x10], 0x53):  # Ctrl+Shift+S
+            return {"ok": False, "error": "failed to send Ctrl+Shift+S to FL Studio"}
+
+        dialog = [0]
+        deadline = time.monotonic() + min(max(timeout_sec, 1.0), 30.0)
+        callback_type = api.ctypes.WINFUNCTYPE(api.ctypes.c_int, api.w.HWND, api.w.LPARAM)
+
+        def find_dialog(candidate, _):
+            if not api.user32.IsWindowVisible(candidate):
+                return 1
+            pid = api.w.DWORD()
+            api.user32.GetWindowThreadProcessId(candidate, api.ctypes.byref(pid))
+            if pid.value != fl_pid.value:
+                return 1
+            cls = api.ctypes.create_unicode_buffer(64)
+            api.user32.GetClassNameW(candidate, cls, len(cls))
+            if cls.value == "#32770":
+                dialog[0] = candidate
+                return 0
+            return 1
+
+        while time.monotonic() < deadline and not dialog[0]:
+            api.user32.EnumWindows(callback_type(find_dialog), 0)
+            if not dialog[0]:
+                time.sleep(0.05)
+        if not dialog[0]:
+            return {"ok": False, "error": "FL Studio Save As dialog did not appear"}
+
+        api.user32.SetForegroundWindow(dialog[0])
+        time.sleep(0.05)
+        if not api.combo([0x12], 0x4E):  # Alt+N -> File name / Nome
+            return {"ok": False, "error": "failed to focus the Save As filename field"}
+        if not api.combo([0x11], 0x41) or not api.text(str(target)):  # Ctrl+A, type path
+            return {"ok": False, "error": "failed to enter the Save As path"}
+        if not api.send([api.key(0x0D), api.key(0x0D, up=True)]):
+            return {"ok": False, "error": "failed to submit the Save As dialog"}
+
+        while time.monotonic() < deadline:
+            if target.is_file() and target.stat().st_size > 0:
+                return {"ok": True, "path": str(target), "bytes": target.stat().st_size,
+                        "verified": True}
+            time.sleep(0.05)
+        return {"ok": False, "error": f"Save As completed without creating {target}"}
+    except Exception as exc:
+        log.warning("project Save As failed: %s", exc)
+        return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}

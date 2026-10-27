@@ -8,6 +8,7 @@ import time
 
 import pytest
 
+import fl_studio_mcp.bridge_client as bridge_client_module
 from fl_studio_mcp.bridge_client import BridgeClient
 
 
@@ -72,6 +73,25 @@ def test_request_write_is_complete_before_wakeup(client_and_bridge):
     request = json.loads(bridge.command_file.read_text(encoding="utf-8"))
     assert request["params"] == {"value": "áudio"}
     assert not (bridge.command_file.parent / "mcp_command.json.tmp").exists()
+
+
+def test_command_replace_retries_windows_sharing_violation(tmp_path, monkeypatch):
+    bridge = FakeWakeBridge(tmp_path)
+    real_replace = bridge_client_module.os.replace
+    attempts = 0
+
+    def flaky_replace(source, destination):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise PermissionError("destination is briefly open in FL")
+        return real_replace(source, destination)
+
+    monkeypatch.setattr(bridge_client_module.os, "replace", flaky_replace)
+    client = BridgeClient(bridge_dir=tmp_path, wake_sender=bridge.wake, timeout=0.5)
+    assert client.call("retry.replace") == {"echo": {}}
+    assert attempts == 3
+    assert not list(tmp_path.glob("mcp_command.*.tmp"))
 
 
 def test_retries_wakeup_until_response(tmp_path):

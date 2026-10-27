@@ -95,6 +95,7 @@ _idle_tick = 0
 _last_request_id = 0
 _auto_jobs = []          # pending non-blocking automation jobs (see automation section)
 _auto_recording = False  # True while an automation clip is being recorded live
+_note_off_jobs = []      # pending preview-note releases
 
 COMMAND_FILE = os.path.join(str(SCRIPT_DIR), "mcp_command.json")
 RESPONSE_FILE = os.path.join(str(SCRIPT_DIR), "mcp_response.json")
@@ -602,7 +603,41 @@ def h_channels_trigger_note(p):
     vel = int(p.get("velocity", 100))
     midi_ch = int(p.get("midi_channel", -1))
     channels.midiNoteOn(idx, note, vel, midi_ch)
-    return {"triggered": True, "note": note}
+    if vel <= 0:
+        return {"triggered": False, "released": True, "note": note, "duration_ms": 0}
+
+    duration_ms = int(p.get("duration_ms", 250) or 250)
+    duration_ms = max(1, duration_ms)
+    _note_off_jobs.append({
+        "deadline": time.monotonic() + duration_ms / 1000.0,
+        "index": idx,
+        "note": note,
+        "midi_channel": midi_ch,
+    })
+    return {
+        "triggered": True,
+        "note": note,
+        "duration_ms": duration_ms,
+        "mode": "async",
+        "approx_duration_sec": duration_ms / 1000.0,
+    }
+
+
+def _process_note_offs():
+    """Release due preview notes without blocking FL's main thread."""
+    if not _note_off_jobs:
+        return
+    now = time.monotonic()
+    pending = []
+    for job in _note_off_jobs:
+        if job["deadline"] <= now:
+            try:
+                channels.midiNoteOn(job["index"], job["note"], 0, job["midi_channel"])
+            except Exception as e:
+                _log("note-off failed: %s" % e)
+        else:
+            pending.append(job)
+    _note_off_jobs[:] = pending
 
 
 def h_channels_get_grid_bit(p):
@@ -864,6 +899,14 @@ def _resolve_plugin_loc(p):
     return index, slot, useGlobal
 
 
+def _plugin_param_value_string(param, index, slot, use_global):
+    """Handle the FL API 38 four-argument signature and older five-argument builds."""
+    try:
+        return plugins.getParamValueString(param, index, slot, use_global)
+    except TypeError:
+        return plugins.getParamValueString(param, index, slot, 0, use_global)
+
+
 def h_plugins_is_valid(p):
     idx, slot, ug = _resolve_plugin_loc(p)
     return {"valid": plugins.isValid(idx, slot, ug) == 1}
@@ -891,8 +934,7 @@ def h_plugins_params(p):
                 "idx": i,
                 "name": plugins.getParamName(i, idx, slot, ug),
                 "value": plugins.getParamValue(i, idx, slot, ug),
-                # getParamValueString has a pickupMode arg BEFORE useGlobalIndex.
-                "value_string": plugins.getParamValueString(i, idx, slot, 0, ug),
+                "value_string": _plugin_param_value_string(i, idx, slot, ug),
             })
         except Exception:
             pass
@@ -904,7 +946,7 @@ def h_plugins_get_param(p):
     pid = int(p["param"])
     return {
         "value": plugins.getParamValue(pid, idx, slot, ug),
-        "value_string": plugins.getParamValueString(pid, idx, slot, 0, ug),
+        "value_string": _plugin_param_value_string(pid, idx, slot, ug),
     }
 
 
@@ -916,7 +958,7 @@ def h_plugins_set_param(p):
     plugins.setParamValue(v, pid, idx, slot, 0, ug)
     return {
         "value": plugins.getParamValue(pid, idx, slot, ug),
-        "value_string": plugins.getParamValueString(pid, idx, slot, 0, ug),
+        "value_string": _plugin_param_value_string(pid, idx, slot, ug),
     }
 
 
@@ -1020,7 +1062,7 @@ def h_playlist_track_info(p):
 def h_playlist_all_tracks(p):
     include_empty = bool(p.get("include_empty", False))
     out = []
-    for i in range(playlist.trackCount()):
+    for i in range(1, playlist.trackCount() + 1):
         info = _pl_info(i)
         if not include_empty and not info["name"]:
             continue
@@ -1059,7 +1101,7 @@ def h_playlist_list_clips(p):
     clips = []
     # FL API: no direct clip enumeration for playlist exists; best effort via liveRange
     try:
-        for t in (range(playlist.trackCount()) if track is None else [int(track)]):
+        for t in (range(1, playlist.trackCount() + 1) if track is None else [int(track)]):
             # we cannot enumerate clips on a playlist track via the public Python API
             # so expose the track info only and mark this limitation
             pass
@@ -1775,6 +1817,10 @@ def OnIdle():
         _process_automation()
     except Exception as e:
         _log("automation processing error: %s" % e)
+    try:
+        _process_note_offs()
+    except Exception as e:
+        _log("note-off processing error: %s" % e)
 
 
 def OnMidiIn(event):
@@ -1793,6 +1839,10 @@ def OnMidiMsg(event):
             _process_automation()
         except Exception as e:
             _log("automation processing error: %s" % e)
+        try:
+            _process_note_offs()
+        except Exception as e:
+            _log("note-off processing error: %s" % e)
         event.handled = True
     else:
         event.handled = False

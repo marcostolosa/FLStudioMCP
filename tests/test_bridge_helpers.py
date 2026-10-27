@@ -11,6 +11,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import pathlib
+from types import SimpleNamespace
 
 import pytest
 
@@ -169,3 +170,70 @@ def test_on_idle_remains_a_file_polling_fallback(tmp_path, monkeypatch):
     result = json.loads(response.read_text(encoding="utf-8"))
     assert result["id"] == 99
     assert result["result"] == {"idle": True}
+
+
+def test_plugin_value_string_uses_fl_api_38_signature(monkeypatch):
+    calls = []
+
+    def get_value_string(param, index, slot, use_global):
+        calls.append((param, index, slot, use_global))
+        return "50%"
+
+    monkeypatch.setattr(bridge, "plugins", SimpleNamespace(getParamValueString=get_value_string))
+    assert bridge._plugin_param_value_string(2, 4, -1, True) == "50%"
+    assert calls == [(2, 4, -1, True)]
+
+
+def test_plugin_value_string_falls_back_to_legacy_signature(monkeypatch):
+    calls = []
+
+    def get_value_string(*args):
+        calls.append(args)
+        if len(args) == 4:
+            raise TypeError("legacy build expects pickupMode")
+        return "legacy"
+
+    monkeypatch.setattr(bridge, "plugins", SimpleNamespace(getParamValueString=get_value_string))
+    assert bridge._plugin_param_value_string(2, 4, -1, True) == "legacy"
+    assert calls == [(2, 4, -1, True), (2, 4, -1, 0, True)]
+
+
+def test_trigger_note_schedules_and_processes_note_off(monkeypatch):
+    calls = []
+    clock = [10.0]
+    monkeypatch.setattr(
+        bridge,
+        "channels",
+        SimpleNamespace(midiNoteOn=lambda *args: calls.append(args)),
+    )
+    monkeypatch.setattr(bridge.time, "monotonic", lambda: clock[0])
+    bridge._note_off_jobs.clear()
+
+    result = bridge.h_channels_trigger_note({
+        "index": 4,
+        "note": 60,
+        "velocity": 90,
+        "duration_ms": 120,
+    })
+    assert result["mode"] == "async"
+    assert result["duration_ms"] == 120
+    assert calls == [(4, 60, 90, -1)]
+
+    clock[0] = 10.2
+    bridge._process_note_offs()
+    assert calls == [(4, 60, 90, -1), (4, 60, 0, -1)]
+    assert bridge._note_off_jobs == []
+
+
+def test_playlist_iteration_uses_one_based_track_indices(monkeypatch):
+    names = {1: "One", 2: "Two"}
+    fake_playlist = SimpleNamespace(
+        trackCount=lambda: 2,
+        getTrackName=lambda index: names[index],
+        getTrackColor=lambda index: 0,
+        isTrackMuted=lambda index: 0,
+        isTrackSolo=lambda index: 0,
+    )
+    monkeypatch.setattr(bridge, "playlist", fake_playlist)
+    result = bridge.h_playlist_all_tracks({"include_empty": True})
+    assert [track["index"] for track in result["tracks"]] == [1, 2]
