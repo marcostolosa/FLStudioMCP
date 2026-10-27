@@ -118,7 +118,7 @@ Requirements:
   named `loopMIDI Port`
 
 ```powershell
-git clone https://github.com/geezoria/FLStudioMCP.git fLMCP
+git clone https://github.com/marcostolosa/FLStudioMCP.git fLMCP
 cd fLMCP
 ./scripts/install_windows.ps1
 ```
@@ -298,7 +298,7 @@ See [`CHANGELOG.md`](CHANGELOG.md) for what changed between releases.
 
 ## Contributing
 
-Issues and PRs welcome at <https://github.com/geezoria/FLStudioMCP>. Please
+Issues and PRs welcome at <https://github.com/marcostolosa/FLStudioMCP>. Please
 run `pytest` before opening a PR. Bug reports are much easier to act on if
 they include the FL build number (`Help > About`) and the snippet of `MIDI
 script output` around the failure.
