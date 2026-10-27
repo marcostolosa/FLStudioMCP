@@ -44,6 +44,13 @@ class _Win32Input:
     KEYEVENTF_KEYUP = 0x0002
     KEYEVENTF_UNICODE = 0x0004
     INPUT_KEYBOARD = 1
+    GW_OWNER = 4
+    GA_ROOTOWNER = 3
+    WM_KEYDOWN = 0x0100
+    WM_KEYUP = 0x0101
+    WM_CHAR = 0x0102
+    BM_CLICK = 0x00F5
+    EM_SETSEL = 0x00B1
 
     def __init__(self):
         import ctypes
@@ -121,6 +128,112 @@ class _Win32Input:
         self.user32.EnumWindows(callback_type(callback), 0)
         return target[0]
 
+    def window_text(self, hwnd: int) -> str:
+        length = self.user32.GetWindowTextLengthW(hwnd)
+        if length <= 0:
+            return ""
+        buf = self.ctypes.create_unicode_buffer(length + 1)
+        self.user32.GetWindowTextW(hwnd, buf, length + 1)
+        return buf.value
+
+    def window_class(self, hwnd: int) -> str:
+        buf = self.ctypes.create_unicode_buffer(128)
+        self.user32.GetClassNameW(hwnd, buf, len(buf))
+        return buf.value
+
+    def window_pid(self, hwnd: int) -> int:
+        pid = self.w.DWORD()
+        self.user32.GetWindowThreadProcessId(hwnd, self.ctypes.byref(pid))
+        return int(pid.value)
+
+    def find_save_dialog(self, fl_hwnd: int) -> int:
+        """Find FL's classic or shell-hosted Save As modal.
+
+        Windows can host the common file dialog outside FL64.exe, so matching
+        only the FL process ID misses a visible dialog on some Windows 11/FL
+        Studio builds. An owned/root-owned dialog or the foreground Save As
+        dialog is sufficiently tied to the requested operation.
+        """
+        target = [0]
+        fl_pid = self.window_pid(fl_hwnd)
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        callback_type = self.ctypes.WINFUNCTYPE(self.ctypes.c_int, self.w.HWND, self.w.LPARAM)
+
+        def callback(candidate, _):
+            if not self.user32.IsWindowVisible(candidate):
+                return 1
+            title = self.window_text(candidate).strip().lower()
+            cls = self.window_class(candidate)
+            looks_like_save = cls == "#32770" or title in {
+                "save as", "save project as", "salvar como", "salvar projeto como",
+            }
+            if not looks_like_save:
+                return 1
+            owner = int(self.user32.GetWindow(candidate, self.GW_OWNER) or 0)
+            root_owner = int(self.user32.GetAncestor(candidate, self.GA_ROOTOWNER) or 0)
+            related = (
+                self.window_pid(candidate) == fl_pid
+                or owner == fl_hwnd
+                or root_owner == fl_hwnd
+                or int(candidate) == foreground
+            )
+            if related:
+                target[0] = int(candidate)
+                return 0
+            return 1
+
+        self.user32.EnumWindows(callback_type(callback), 0)
+        return target[0]
+
+    def find_descendant(self, root: int, *, class_name: str, control_id: int) -> int:
+        target = [0]
+        callback_type = self.ctypes.WINFUNCTYPE(self.ctypes.c_int, self.w.HWND, self.w.LPARAM)
+
+        def callback(candidate, _):
+            if (self.window_class(candidate) == class_name
+                    and int(self.user32.GetDlgCtrlID(candidate)) == control_id):
+                target[0] = int(candidate)
+                return 0
+            return 1
+
+        self.user32.EnumChildWindows(root, callback_type(callback), 0)
+        return target[0]
+
+    def edit_text(self, edit: int, value: str) -> None:
+        """Replace an Edit control's value through its normal message path."""
+        self.user32.SetFocus(edit)
+        self.user32.SendMessageW(edit, self.EM_SETSEL, 0, -1)
+        for char in value:
+            self.user32.SendMessageW(edit, self.WM_CHAR, ord(char), 0)
+
+    def set_save_dialog_target(self, dialog: int, target: Path) -> bool:
+        """Set directory/name through stable control IDs and submit the dialog."""
+        self.user32.SetForegroundWindow(dialog)
+        time.sleep(0.05)
+
+        # Alt+D exposes the standard address edit. Its numeric control ID is
+        # 41477 on the Windows 11 common file dialog in both en-US and pt-BR.
+        self.combo([0x12], 0x44)
+        time.sleep(0.05)
+        address = self.find_descendant(dialog, class_name="Edit", control_id=41477)
+        filename = self.find_descendant(dialog, class_name="Edit", control_id=1001)
+        save_button = int(self.user32.GetDlgItem(dialog, 1) or 0)
+        if not address or not filename or not save_button:
+            return False
+
+        self.edit_text(address, str(target.parent))
+        self.user32.SendMessageW(address, self.WM_KEYDOWN, 0x0D, 0)
+        self.user32.SendMessageW(address, self.WM_KEYUP, 0x0D, 0)
+        time.sleep(0.50)
+
+        # FL supplies the .flp extension from the selected file type.
+        filename = self.find_descendant(dialog, class_name="Edit", control_id=1001)
+        if not filename:
+            return False
+        self.edit_text(filename, target.stem)
+        self.user32.SendMessageW(save_button, self.BM_CLICK, 0, 0)
+        return True
+
 
 def send_hotkey_windows() -> bool:
     """Find FL Studio and send Ctrl+Alt+Y. Returns True on success."""
@@ -162,48 +275,24 @@ def save_project_as_windows(path: str, timeout_sec: float = 15.0) -> dict:
         hwnd = api.find_fl_window()
         if not hwnd:
             return {"ok": False, "error": "FL Studio window not found"}
-        fl_pid = api.w.DWORD()
-        api.user32.GetWindowThreadProcessId(hwnd, api.ctypes.byref(fl_pid))
-
         api.user32.ShowWindow(hwnd, 9)
         api.user32.SetForegroundWindow(hwnd)
-        time.sleep(0.08)
-        if not api.combo([0x11, 0x10], 0x53):  # Ctrl+Shift+S
-            return {"ok": False, "error": "failed to send Ctrl+Shift+S to FL Studio"}
+        time.sleep(0.12)
+        dialog = [api.find_save_dialog(hwnd)]
+        if not dialog[0]:
+            if not api.combo([0x11, 0x10], 0x53):  # Ctrl+Shift+S
+                return {"ok": False, "error": "failed to send Ctrl+Shift+S to FL Studio"}
 
-        dialog = [0]
         deadline = time.monotonic() + min(max(timeout_sec, 1.0), 30.0)
-        callback_type = api.ctypes.WINFUNCTYPE(api.ctypes.c_int, api.w.HWND, api.w.LPARAM)
-
-        def find_dialog(candidate, _):
-            if not api.user32.IsWindowVisible(candidate):
-                return 1
-            pid = api.w.DWORD()
-            api.user32.GetWindowThreadProcessId(candidate, api.ctypes.byref(pid))
-            if pid.value != fl_pid.value:
-                return 1
-            cls = api.ctypes.create_unicode_buffer(64)
-            api.user32.GetClassNameW(candidate, cls, len(cls))
-            if cls.value == "#32770":
-                dialog[0] = candidate
-                return 0
-            return 1
-
         while time.monotonic() < deadline and not dialog[0]:
-            api.user32.EnumWindows(callback_type(find_dialog), 0)
+            dialog[0] = api.find_save_dialog(hwnd)
             if not dialog[0]:
                 time.sleep(0.05)
         if not dialog[0]:
             return {"ok": False, "error": "FL Studio Save As dialog did not appear"}
 
-        api.user32.SetForegroundWindow(dialog[0])
-        time.sleep(0.05)
-        if not api.combo([0x12], 0x4E):  # Alt+N -> File name / Nome
-            return {"ok": False, "error": "failed to focus the Save As filename field"}
-        if not api.combo([0x11], 0x41) or not api.text(str(target)):  # Ctrl+A, type path
-            return {"ok": False, "error": "failed to enter the Save As path"}
-        if not api.send([api.key(0x0D), api.key(0x0D, up=True)]):
-            return {"ok": False, "error": "failed to submit the Save As dialog"}
+        if not api.set_save_dialog_target(dialog[0], target):
+            return {"ok": False, "error": "failed to fill the Save As dialog controls"}
 
         while time.monotonic() < deadline:
             if target.is_file() and target.stat().st_size > 0:
