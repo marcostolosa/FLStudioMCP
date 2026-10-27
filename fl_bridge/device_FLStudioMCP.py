@@ -1498,7 +1498,15 @@ def h_ui_scroll_to_channel(p):
 # ---- piano roll (staging only — real edit happens in pyscript via keystroke) ----
 
 def _stage_piano_roll_request(request):
-    PR_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    # FL 2025's sub-interpreter has a broken os.mkdir that returns NULL (raising
+    # SystemError) even when the directory already exists. The "Piano roll
+    # scripts" folder always exists, so only attempt mkdir when it is missing,
+    # and never let a mkdir quirk abort staging.
+    try:
+        if not PR_REQUEST.parent.exists():
+            PR_REQUEST.parent.mkdir(parents=True, exist_ok=True)
+    except (OSError, SystemError):
+        pass
     existing = []
     if PR_REQUEST.exists():
         try:
