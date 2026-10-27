@@ -118,7 +118,7 @@ Requirements:
   named `loopMIDI Port`
 
 ```powershell
-git clone https://github.com/geezoria/FLStudioMCP.git fLMCP
+git clone https://github.com/marcostolosa/FLStudioMCP.git fLMCP
 cd fLMCP
 ./scripts/install_windows.ps1
 ```
