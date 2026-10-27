@@ -104,6 +104,10 @@ error: "...not available"}` rather than raising.
 - `transport_toggle_metronome` needs `FPT_Metronome`
 - `transport_toggle_countdown_before_recording` needs `FPT_CountDown*`
 - `transport_jog` needs `FPT_Jog`
+- `transport_toggle_punch` needs `FPT_Punch`
+- `transport_toggle_overdub` needs `FPT_Overdub`
+- `transport_toggle_loop_recording` needs `FPT_LoopRecord`
+- `transport_jump_marker` needs `FPT_MarkerJumpJog`
 - `transport_set_time_signature` needs `REC_MainTimeSigNum/Den`
 - `project_save` needs `FPT_Save` (FL 20+ has this)
 
@@ -151,3 +155,10 @@ On FL Studio 2025 Producer 25.1.5, `OnMidiMsg` was observed reliably while
 `OnIdle` and `OnRefresh` were not emitted for the controller. `OnIdle` is only
 a fallback. Asynchronous automation is advanced by a temporary wake pump in
 the external MCP process.
+
+### Reloading controller changes
+
+Toggling **Enable** calls the already-imported module's lifecycle again but does
+not necessarily re-read `device_FLStudioMCP.py`. After updating that file, set
+the MIDI input's **Controller type** to `(generic controller)` and then back to
+`fLMCP Bridge`. This was verified on FL Studio 2025 Producer 25.1.5.

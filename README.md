@@ -36,7 +36,7 @@ Built from scratch to improve on three earlier community attempts
 | Transport: atomic JSON + MIDI wake | ❌ (MIDI + JSON-poll) | ❌ (MIDI) | ❌ (MIDI) | ✅ |
 | FL 2025 sub-interpreter compatible (no background threads) | ❌ | ❌ | ❌ | ✅ |
 | PowerShell installer for Windows | ❌ | ❌ | ❌ | ✅ |
-| Tool count | ≈ 60 | ≈ 14 | ≈ 5 | **159** |
+| Tool count | ≈ 60 | ≈ 14 | ≈ 5 | **165** |
 
 ## Highlights
 
@@ -61,6 +61,9 @@ Built from scratch to improve on three earlier community attempts
 - **Audio-file analysis.** Drop any MP3 / WAV / FLAC / OGG on it — get back
   tempo, detected key, onsets, and (optionally) the dominant melody
   transcribed into FL's piano roll.
+- **Live production feedback.** Read per-track left/right mixer peaks, inspect
+  channel types and window visibility/focus, and control punch, overdub, loop
+  recording and marker jumps without leaving the MCP session.
 
 ## Architecture
 
@@ -224,24 +227,24 @@ Or the interactive route — Claude opens the GUI:
 voice_open_gui()   # Dear PyGui window with live waveform + pitch readout
 ```
 
-## Tool catalogue (159 tools + 7 resources)
+## Tool catalogue (165 tools + 7 resources)
 
 Full reference with signatures: [`docs/TOOLS.md`](docs/TOOLS.md).
 
 | Area | Count | Highlights |
 | --- | :-: | --- |
 | Meta | 4 | ping, reconnect, bridge info, raw escape hatch |
-| Transport | 14 | play / stop / record, tempo, time sig, metronome, jog |
+| Transport | 18 | play / stop / record, tempo, punch, overdub, loop record, marker jump |
 | Patterns | 13 | create, rename, clone, color, length, find-by-name |
 | Channels | 20 | full rack, step sequencer get / set, routing, trigger |
-| Mixer | 18 | vol / pan / mute / solo / arm, sends, EQ, FX slots, routing |
+| Mixer | 19 | vol / pan / mute / solo / arm, live peaks, sends, EQ, FX slots, routing |
 | Plugins | 13 | get / set / search params, preset navigation, editor |
 | Piano roll | 10 | add, read, clear, quantize, transpose, humanize, duplicate |
 | Playlist | 14 | tracks, clips (limited), markers |
 | Arrangement | 5 | current, list, select, jump marker |
 | Automation | 5 | tempo, channel vol / pan, mixer vol, plugin params |
 | Project | 11 | metadata, save, save-as, undo / redo, render |
-| UI | 7 | show / hide windows, hints, focus |
+| UI | 8 | show / hide windows, visibility, hints, focus + form caption |
 | Generators | 14 | scales, chords, progressions, arpeggios, basslines, drums |
 | Voice-to-MIDI | 5 | record + transcribe + scale-snap + send to FL, GUI |
 | Audio | 5 | analyze MP3 / WAV, slice at onsets, melody → piano roll, DnB flip |
@@ -265,6 +268,7 @@ before issuing edits.
 | Symptom | Fix |
 | --- | --- |
 | `bridge unavailable` from tool calls | FL is not running, the script is not loaded, or the wake port name differs. Enable `loopMIDI Port` with Controller type = `fLMCP Bridge`, or set `FL_STUDIO_MCP_MIDI_PORT` to the actual port name. |
+| Updated controller code still behaves like the old version | FL keeps the imported Python module in memory when **Enable** is merely toggled. In MIDI Settings, temporarily change **Controller type** to `(generic controller)`, then select `fLMCP Bridge` again to force a real module reload. |
 | `loopMIDI Port` not found | Start loopMIDI and create/rename the port to `loopMIDI Port`; then refresh FL's MIDI device list. |
 | Piano-roll edits don't apply | fLMCP focuses FL Studio, tries `Ctrl+Alt+Y`, then automatically selects **ComposeWithLLM** from the piano-roll menu if no state comes back. Check that a piano roll can open and that `ComposeWithLLM.pyscript` is installed. |
 | Hotkey fires the wrong script | Open any piano roll → right-click the script dropdown → set `ComposeWithLLM` as the default. |

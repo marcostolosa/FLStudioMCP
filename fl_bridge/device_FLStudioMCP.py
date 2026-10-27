@@ -391,6 +391,40 @@ def h_transport_jog(p):
     return {"steps": steps}
 
 
+def _transport_toggle_command(name):
+    fpt = _fpt(name)
+    if fpt is None:
+        return {"ok": False, "error": "midi.%s not available" % name}
+    result = transport.globalTransport(fpt, 1)
+    return {"ok": True, "command": name, "result": result}
+
+
+def h_transport_toggle_punch(_):
+    return _transport_toggle_command("FPT_Punch")
+
+
+def h_transport_toggle_overdub(_):
+    return _transport_toggle_command("FPT_Overdub")
+
+
+def h_transport_toggle_loop_recording(_):
+    return _transport_toggle_command("FPT_LoopRecord")
+
+
+def h_transport_jump_marker(p):
+    direction = 1 if int(p.get("direction", 1)) >= 0 else -1
+    fpt = _fpt("FPT_MarkerJumpJog")
+    if fpt is None:
+        return {"ok": False, "error": "midi.FPT_MarkerJumpJog not available"}
+    result = transport.globalTransport(fpt, direction)
+    return {
+        "ok": True,
+        "direction": direction,
+        "result": result,
+        "position_bars": transport.getSongPos(3),
+    }
+
+
 # ---- patterns ---------------------------------------------------------------
 
 def h_patterns_count(_):
@@ -495,6 +529,15 @@ def _ch_info(i):
     pitch_cents = _safe(channels.getChannelPitch, i, 1, use_global)
     # getChannelVolume(index, mode, useGlobalIndex): mode=False -> normalized
     # 0..1 (what setVolume expects), mode=True -> dB. The index arg comes THIRD.
+    channel_type = _safe(channels.getChannelType, i, use_global)
+    type_names = {
+        getattr(midi, "CT_Sampler", 0): "sampler",
+        getattr(midi, "CT_Hybrid", 1): "hybrid",
+        getattr(midi, "CT_GenPlug", 2): "generator_plugin",
+        getattr(midi, "CT_Layer", 3): "layer",
+        getattr(midi, "CT_AudioClip", 4): "audio_clip",
+        getattr(midi, "CT_AutoClip", 5): "automation_clip",
+    }
     return {
         "index": i,
         "name": channels.getChannelName(i, use_global),
@@ -508,7 +551,8 @@ def _ch_info(i):
         "is_solo": channels.isChannelSolo(i, use_global) == 1,
         "is_selected": channels.isChannelSelected(i, use_global) == 1,
         "fx_track": channels.getTargetFxTrack(i, use_global),
-        "type": _safe(channels.getChannelType, i, use_global),
+        "type": channel_type,
+        "type_name": type_names.get(channel_type, "unknown"),
     }
 
 
@@ -751,6 +795,21 @@ def h_mixer_track_info(p):
             slots.append({"slot": s, "plugin_id": -1, "valid": False, "name": None})
     info["fx_slots"] = slots
     return info
+
+
+def h_mixer_peaks(p):
+    """Return live normalized left/right VU levels for one mixer track."""
+    tr = int(p["track"])
+    if not hasattr(mixer, "getTrackPeaks"):
+        return {"ok": False, "error": "mixer.getTrackPeaks not available"}
+    left = float(mixer.getTrackPeaks(tr, getattr(midi, "PEAK_L", 0)))
+    right = float(mixer.getTrackPeaks(tr, getattr(midi, "PEAK_R", 1)))
+    return {
+        "track": tr,
+        "left": left,
+        "right": right,
+        "peak": max(left, right),
+    }
 
 
 def h_mixer_all_tracks(p):
@@ -1440,8 +1499,28 @@ def h_ui_focused(_):
         "focused_window": focused_name,
         "window_id": focused_id,
         "focused_form_id": _safe(ui.getFocusedFormID),
+        "focused_form_caption": _safe(ui.getFocusedFormCaption),
         "in_popup_menu": bool(_safe(ui.isInPopupMenu) == 1),
     }
+
+
+def h_ui_window_status(p):
+    requested = p.get("name")
+    names = [requested] if requested else list(_WIN_IDS.keys())
+    windows = []
+    for name in names:
+        if name not in _WIN_IDS:
+            continue
+        wid = _WIN_IDS[name]
+        windows.append({
+            "name": name,
+            "window_id": wid,
+            "visible": bool(_safe(ui.getVisible, wid)),
+            "focused": bool(_safe(ui.getFocused, wid)),
+        })
+    if requested and windows:
+        return windows[0]
+    return {"windows": windows}
 
 
 def h_ui_show_window(p):
@@ -1673,6 +1752,10 @@ _HANDLERS = {
     "transport.toggleMetronome": h_transport_toggle_metronome,
     "transport.toggleCountdownBeforeRec": h_transport_toggle_countdown,
     "transport.jog": h_transport_jog,
+    "transport.togglePunch": h_transport_toggle_punch,
+    "transport.toggleOverdub": h_transport_toggle_overdub,
+    "transport.toggleLoopRecording": h_transport_toggle_loop_recording,
+    "transport.jumpMarker": h_transport_jump_marker,
     # patterns
     "patterns.count": h_patterns_count,
     "patterns.current": h_patterns_current,
@@ -1711,6 +1794,7 @@ _HANDLERS = {
     # mixer
     "mixer.count": h_mixer_count,
     "mixer.trackInfo": h_mixer_track_info,
+    "mixer.peaks": h_mixer_peaks,
     "mixer.allTracks": h_mixer_all_tracks,
     "mixer.setVolume": h_mixer_set_volume,
     "mixer.setPan": h_mixer_set_pan,
@@ -1782,6 +1866,7 @@ _HANDLERS = {
     "project.version": h_project_version,
     # ui
     "ui.focusedWindow": h_ui_focused,
+    "ui.windowStatus": h_ui_window_status,
     "ui.showWindow": h_ui_show_window,
     "ui.hideWindow": h_ui_hide_window,
     "ui.hint": h_ui_hint,

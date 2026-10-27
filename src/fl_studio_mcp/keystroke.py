@@ -139,6 +139,40 @@ class _Win32Input:
         self.user32.EnumWindows(callback_type(callback), 0)
         return target[0]
 
+    def focus_window(self, hwnd: int) -> bool:
+        """Reliably foreground a window from a background MCP process.
+
+        ``SetForegroundWindow`` alone is advisory on modern Windows and often
+        fails when the MCP host owns the foreground input queue. Temporarily
+        attaching the current and target input queues lets the subsequent
+        SendInput shortcut reach FL Studio deterministically.
+        """
+        kernel32 = self.ctypes.WinDLL("kernel32", use_last_error=True)
+        current_thread = int(kernel32.GetCurrentThreadId())
+        target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        foreground_thread = (
+            int(self.user32.GetWindowThreadProcessId(foreground, None))
+            if foreground else 0
+        )
+        attached: list[int] = []
+        try:
+            for thread_id in {target_thread, foreground_thread}:
+                if thread_id and thread_id != current_thread:
+                    if self.user32.AttachThreadInput(current_thread, thread_id, True):
+                        attached.append(thread_id)
+            self.user32.ShowWindow(hwnd, 9)
+            self.user32.BringWindowToTop(hwnd)
+            self.user32.SetForegroundWindow(hwnd)
+            self.user32.SetActiveWindow(hwnd)
+            self.user32.SetFocus(hwnd)
+        finally:
+            for thread_id in attached:
+                self.user32.AttachThreadInput(current_thread, thread_id, False)
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        root_owner = int(self.user32.GetAncestor(foreground, self.GA_ROOTOWNER) or 0)
+        return foreground == int(hwnd) or root_owner == int(hwnd)
+
     def window_text(self, hwnd: int) -> str:
         length = self.user32.GetWindowTextLengthW(hwnd)
         if length <= 0:
@@ -219,7 +253,7 @@ class _Win32Input:
 
     def set_save_dialog_target(self, dialog: int, target: Path) -> bool:
         """Set directory/name through stable control IDs and submit the dialog."""
-        self.user32.SetForegroundWindow(dialog)
+        self.focus_window(dialog)
         time.sleep(0.05)
 
         # Alt+D exposes the standard address edit. Its numeric control ID is
@@ -256,8 +290,7 @@ def send_hotkey_windows() -> bool:
         if not hwnd:
             log.warning("FL Studio window not found for keystroke")
             return False
-        api.user32.ShowWindow(hwnd, 9)
-        api.user32.SetForegroundWindow(hwnd)
+        api.focus_window(hwnd)
         time.sleep(0.08)
         return api.combo([0x11, 0x12], 0x59)  # Ctrl+Alt+Y
     except Exception as exc:
@@ -280,8 +313,7 @@ def select_compose_script_windows() -> bool:
         if not hwnd:
             log.warning("FL Studio window not found for piano-roll script bootstrap")
             return False
-        api.user32.ShowWindow(hwnd, 9)
-        api.user32.SetForegroundWindow(hwnd)
+        api.focus_window(hwnd)
         time.sleep(0.10)
         for index, key in enumerate(_COMPOSE_MENU_KEYS):
             if not api.press(key):
@@ -316,8 +348,7 @@ def save_project_as_windows(path: str, timeout_sec: float = 15.0) -> dict:
         hwnd = api.find_fl_window()
         if not hwnd:
             return {"ok": False, "error": "FL Studio window not found"}
-        api.user32.ShowWindow(hwnd, 9)
-        api.user32.SetForegroundWindow(hwnd)
+        api.focus_window(hwnd)
         time.sleep(0.12)
         dialog = [api.find_save_dialog(hwnd)]
         if not dialog[0]:
