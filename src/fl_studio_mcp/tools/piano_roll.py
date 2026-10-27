@@ -59,7 +59,7 @@ def register(mcp: FastMCP) -> None:
         `notes`: list of {midi: int, time_bars: float, duration_bars: float,
                           velocity: 0..1, pan?: -1..1}.
 
-        If `channel` is given and the TCP (MIDI) bridge is online, that channel's
+        If `channel` is given and the file/MIDI bridge is online, that channel's
         piano roll is opened automatically. Otherwise, before calling, make sure:
           1. In FL Studio, open the target channel's piano roll (double-click
              the channel in the Channel Rack).

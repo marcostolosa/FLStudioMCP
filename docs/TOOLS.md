@@ -8,7 +8,7 @@ match the Python signatures.
 | Tool | Purpose |
 | --- | --- |
 | `fl_ping` | Reach the bridge; returns version + uptime |
-| `fl_reconnect` | Drop + reopen TCP connection |
+| `fl_reconnect` | Reset cached status and run a fresh file/MIDI ping |
 | `fl_bridge_info` | FL version, script dir, available API modules |
 | `fl_call_raw(action, params)` | Escape hatch — invoke any bridge action directly |
 
@@ -71,7 +71,7 @@ match the Python signatures.
 
 `piano_roll_add_notes(notes, clear_first, channel?, pattern?)` — notes are
 dicts `{midi, time_bars, duration_bars, velocity (0..1), pan?}`. If `channel`
-is given and the TCP bridge is online, that channel's piano roll is opened
+is given and the controller bridge is online, that channel's piano roll is opened
 automatically before the edit (so the notes route to the right channel);
 otherwise the edit targets whatever piano roll is currently open. All the
 piano-roll tools below accept the same optional `channel` / `pattern`.

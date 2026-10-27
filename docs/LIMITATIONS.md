@@ -137,15 +137,19 @@ error: "...not available"}` rather than raising.
   When Basic Pitch is absent, `polyphonic=True` returns a structured install
   hint and the monophonic engine still works.
 
-### TCP transport
-- Single-connection at a time: multiple concurrent MCP clients will serialize
-  through one TCP conn. This keeps FL's main thread predictable; typically
-  fine since Claude is the only client.
-- Bridge binds to `127.0.0.1:9876`. If another process holds that port,
-  bridge's `OnInit` logs the bind error; clients then get `bridge unavailable`.
+### File/MIDI transport
+- FL Studio 2025 controller scripts cannot start background threads, so the
+  bridge uses one atomic command file, one response file, and a reserved MIDI
+  CC wake-up through loopMIDI.
+- Calls are serialized across one request/response slot. The client retries a
+  wake every 100 ms and reports a timeout with the expected MIDI port name.
+- The default Windows output name is `loopMIDI Port`; override it with
+  `FL_STUDIO_MCP_MIDI_PORT` when using a different name.
+- The wake signature is CC 119/value 1 on channel 16. Other MIDI messages are
+  not consumed by the bridge.
 
-### OnIdle throughput
-FL Studio's `OnIdle` fires roughly 10–30 Hz depending on workload (not
-60 Hz). Each drain cycle processes up to 32 queued requests, so realistic
-throughput is a few hundred calls/sec. Individual call latency is typically
-15–80 ms round-trip.
+### Callback availability
+On FL Studio 2025 Producer 25.1.5, `OnMidiMsg` was observed reliably while
+`OnIdle` and `OnRefresh` were not emitted for the controller. `OnIdle` is only
+a fallback. Asynchronous automation is advanced by a temporary wake pump in
+the external MCP process.

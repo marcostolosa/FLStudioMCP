@@ -6,7 +6,8 @@ file that the `ComposeWithLLM.pyscript` (piano roll pyscript) picks up when
 it runs. The server triggers the pyscript by synthesising Ctrl+Alt+Y into the
 FL Studio window. The pyscript then writes a state file we read back.
 
-This complements `bridge_client.py` (TCP over MIDI controller script).
+This complements `bridge_client.py` (JSON files + MIDI wake-up through the
+controller script).
 """
 
 from __future__ import annotations
@@ -86,11 +87,11 @@ def wait_for_state(deadline_sec: float = 3.0) -> dict | None:
 
 
 def open_piano_roll(channel: int | None = None, pattern: int | None = None) -> dict:
-    """Best-effort: ask the TCP (MIDI) bridge to open the given channel's piano
+    """Best-effort: ask the file/MIDI controller bridge to open the given channel's piano
     roll, optionally switching pattern first, so subsequently-staged edits land
     on the intended channel.
 
-    If the TCP bridge is offline (no `fLMCP Bridge` MIDI device enabled), this
+    If the controller bridge is offline (no `fLMCP Bridge` MIDI device enabled), this
     is a no-op and edits target whatever piano roll is currently open in FL.
     Requires a channel — FL needs a channel to know which piano roll to show.
     """
@@ -110,7 +111,7 @@ def stage_and_run(actions: list[dict], wait_sec: float = 3.0,
                   channel: int | None = None, pattern: int | None = None) -> dict:
     """Queue one or more piano-roll actions, fire the hotkey, wait for state.
 
-    If `channel` is given and the TCP bridge is online, the correct channel's
+    If `channel` is given and the controller bridge is online, the correct channel's
     piano roll is opened first (best-effort) so the edits route to it.
     """
     from .keystroke import send_hotkey_windows

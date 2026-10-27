@@ -9,6 +9,7 @@ previously used 0xBBGGRR and swapped red/blue) plus the small mappers.
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 
 import pytest
@@ -90,3 +91,81 @@ def test_safe_swallows_exceptions():
         raise RuntimeError("nope")
     assert bridge._safe(boom) is None
     assert bridge._safe(lambda x: x + 1, 41) == 42
+
+
+class _MidiEvent:
+    def __init__(self, status, data1, data2):
+        self.status = status
+        self.data1 = data1
+        self.data2 = data2
+        self.handled = False
+
+
+def test_midi_wakeup_processes_file_request(tmp_path, monkeypatch):
+    command = tmp_path / "mcp_command.json"
+    response = tmp_path / "mcp_response.json"
+    monkeypatch.setattr(bridge, "COMMAND_FILE", str(command))
+    monkeypatch.setattr(bridge, "RESPONSE_FILE", str(response))
+    monkeypatch.setattr(bridge, "_last_request_id", 0)
+    monkeypatch.setitem(bridge._HANDLERS, "test.echo", lambda params: params)
+    command.write_text(
+        json.dumps({"id": 42, "action": "test.echo", "params": {"value": "ok"}}),
+        encoding="utf-8",
+    )
+
+    event = _MidiEvent(bridge.WAKE_STATUS, bridge.WAKE_DATA1, bridge.WAKE_DATA2)
+    bridge.OnMidiMsg(event)
+
+    assert event.handled is True
+    assert json.loads(response.read_text(encoding="utf-8")) == {
+        "id": 42,
+        "ok": True,
+        "result": {"value": "ok"},
+    }
+
+
+def test_midi_wakeup_does_not_replay_same_request(tmp_path, monkeypatch):
+    command = tmp_path / "mcp_command.json"
+    response = tmp_path / "mcp_response.json"
+    calls = []
+    monkeypatch.setattr(bridge, "COMMAND_FILE", str(command))
+    monkeypatch.setattr(bridge, "RESPONSE_FILE", str(response))
+    monkeypatch.setattr(bridge, "_last_request_id", 0)
+    monkeypatch.setitem(bridge._HANDLERS, "test.once", lambda params: calls.append(params) or {})
+    command.write_text(
+        json.dumps({"id": 7, "action": "test.once", "params": {"n": 1}}),
+        encoding="utf-8",
+    )
+
+    bridge.OnMidiMsg(_MidiEvent(bridge.WAKE_STATUS, bridge.WAKE_DATA1, bridge.WAKE_DATA2))
+    bridge.OnMidiMsg(_MidiEvent(bridge.WAKE_STATUS, bridge.WAKE_DATA1, bridge.WAKE_DATA2))
+
+    assert calls == [{"n": 1}]
+
+
+def test_non_wakeup_midi_passes_through(tmp_path, monkeypatch):
+    response = tmp_path / "mcp_response.json"
+    monkeypatch.setattr(bridge, "RESPONSE_FILE", str(response))
+    event = _MidiEvent(0x90, 60, 100)
+    bridge.OnMidiMsg(event)
+    assert event.handled is False
+    assert not response.exists()
+
+
+def test_on_idle_remains_a_file_polling_fallback(tmp_path, monkeypatch):
+    command = tmp_path / "mcp_command.json"
+    response = tmp_path / "mcp_response.json"
+    monkeypatch.setattr(bridge, "COMMAND_FILE", str(command))
+    monkeypatch.setattr(bridge, "RESPONSE_FILE", str(response))
+    monkeypatch.setattr(bridge, "_last_request_id", 0)
+    monkeypatch.setitem(bridge._HANDLERS, "test.idle", lambda params: {"idle": True})
+    command.write_text(
+        json.dumps({"id": 99, "action": "test.idle", "params": {}}),
+        encoding="utf-8",
+    )
+
+    bridge.OnIdle()
+
+    result = json.loads(response.read_text(encoding="utf-8"))
+    assert result["id"] == 99
+    assert result["result"] == {"idle": True}
